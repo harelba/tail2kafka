@@ -1,0 +1,102 @@
+#!/usr/bin/python
+
+import os,sys
+
+# Assumes kafka module is in a folder parallel to the folder this script exists in.
+# Once we can install pykafka as a separate module, this will be removed.
+sys.path.append(os.path.join(os.path.split(sys.argv[0])[0],'..'))
+import kafka as k
+
+from optparse import OptionParser
+import subprocess
+import atexit
+
+
+should_stop = False
+pending_messages = []
+
+def create_kafka_producer(host,port,topic):
+	return k.producer.Producer(topic,host=host,port=port)
+
+def create_message_data(metadata,data):
+	if metadata is not None:
+		return "%s::%s" % (metadata,data)
+	else:
+		return data
+
+def flush_messages(producer):
+	global pending_messages
+	print "flushing %d messages " % len(pending_messages)
+	producer.send(pending_messages)
+	pending_messages = []
+
+def send_to_kafka(producer,message_text,batch_size):
+	global pending_messages
+	pending_messages.append(k.message.Message(message_text))
+	if len(pending_messages) == batch_size:
+		flush_messages(producer)
+
+def log_lines_generator(logfile,delay_between_iterations=None):
+	global should_stop
+	cmd = ['tail','-n','0','-F']
+	if delay_between_iterations is not None:
+		cmd.append('-s')
+		cmd.append(delay_between_iterations)
+	cmd.append(logfile)
+	process = subprocess.Popen(cmd,stdout=subprocess.PIPE,stderr=None)
+	while not should_stop:
+		line = process.stdout.readline().strip()
+		yield line
+	
+def main():
+	parser = OptionParser(usage="""
+	%prog -l <log-file> -t <kafka-topic> -s <kafka-server> -p <kafka-port> [other-options]
+
+	Tails a log file continously, sending log lines to a kafka topic as messages and supporting log rotation. Optionally,
+	prepend a "metadata" string to each log line (kafka message will contain the string <metadata>:<log-line>).
+
+	set -l to the log file to be tailed. The log tailing supports log rotation.
+	set -s and -p to set the kafka server (ZK is not supported for now)
+	set -t <topic> to set the kafka topic to send
+
+	Simple batching is supported (use -b to choose the batch size, default is 10).
+
+	Advanced: If needed, use -d <delay> in order to control the tail delay - Unneeded in almost all cases.
+
+	NOTE: Currently expects kafka/ module to be in a folder parallel to this script.
+""")
+	parser.add_option("-s","--host",dest="host",default="localhost",
+	                help="kafka host")
+	parser.add_option("-p","--port",dest="port",default="9092",
+	                help="kafka port")
+	parser.add_option("-t","--topic",dest="topic",default=None,
+	                help="REQUIRED: Topic to send to")
+	parser.add_option("-l","--log-file",dest="logfile",default=None,
+	                help="REQUIRED: Log file to tail")
+	parser.add_option("-m","--metadata",dest="metadata",default=None,
+	                help="REQUIRED: metadata tag to send along with the data")
+	parser.add_option("-b","--batch-size",dest="batch_size",default="10",
+	                help="Size of message batches")
+	parser.add_option("-d","--delay",dest="delay",default=None,
+	                help="tail delay between iterations")
+	
+	(options,args) = parser.parse_args()
+	
+	if options.topic is None or options.logfile is None:
+		parser.print_help()
+		sys.exit(1)
+
+	producer = create_kafka_producer(options.host,int(options.port),options.topic)
+	atexit.register(flush_messages,producer)
+	try:
+		for line in log_lines_generator(options.logfile):
+			mt = create_message_data(options.metadata,line)
+			send_to_kafka(producer,mt,int(options.batch_size))
+	except KeyboardInterrupt,e:
+		pass
+
+if __name__ == '__main__':
+	main()
+
+
+

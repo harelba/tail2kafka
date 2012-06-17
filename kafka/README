@@ -1,0 +1,10 @@
+This package is derived from Daniel Sully's great pykafka module (https://github.com/dsully/pykafka).
+
+There is currently an issue with a separate installation of this package using pip, so it is embedded here.
+
+Once the issue is solved, this folder will be removed and the original pip installation will be used.
+
+2012
+Harel Ben Attia 
+https://github.com/harelba
+@harelba
